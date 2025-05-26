@@ -2,6 +2,12 @@ import pandas as pd
 from datetime import datetime, timedelta
 from predictive_model import FEATURE_COLUMNS, train_and_return_model
 
+# Paths to required files
+INPUT_CSV = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\meteo_forecast.csv"
+OUTPUT_CSV = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\predictions.csv"
+FIRE_CSV = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\raw_fire_totrain.csv"
+METEO_CSV = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\raw_meteo_totrain.csv"
+
 def load_meteorological_data(csv_path: str) -> pd.DataFrame:
     """
     Load meteorological data from a CSV file and parse the time column.
@@ -74,20 +80,24 @@ def save_forecast(df: pd.DataFrame, output_path: str) -> None:
     df.to_csv(output_path, index=False)
 
 def main():
-    input_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Model predictions\meteo_df_ok.csv"
-    output_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Model predictions\meteo_forecast_predictions.csv"
-
-    # Load and preprocess data
-    df_meteo = load_meteorological_data(input_csv)
+    """
+    Main execution flow:
+    - Load new meteorological data
+    - Adjust time column to start from today
+    - Prepare features
+    - Train model using historical data
+    - Generate predictions
+    - Save results to CSV
+    """
+    df_meteo = load_meteorological_data(INPUT_CSV)
     df_meteo = remap_time_column(df_meteo)
     
-    # Prepare features and predict
     df_features = prepare_features(df_meteo, FEATURE_COLUMNS)
-    clf = train_and_return_model()
+    clf = train_and_return_model(FIRE_CSV, METEO_CSV)
     df_meteo = add_predictions(df_meteo, df_features, clf)
 
-    # Save results
-    save_forecast(df_meteo, output_csv)
+    save_forecast(df_meteo, OUTPUT_CSV)
+    print(f"✅ Predictions saved to: {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()

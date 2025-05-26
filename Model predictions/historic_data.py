@@ -130,9 +130,9 @@ def main():
     - Print fire class distribution and missing values
     - Save to CSV
     """
-    fire_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Model predictions\fire_totrain.csv"
-    meteo_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Model predictions\raw_meteo_totrain.csv"
-    output_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Model predictions\meteo_totrain.csv"
+    fire_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\fire_totrain.csv"
+    meteo_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\raw_meteo_totrain.csv"
+    output_csv = r"C:\Users\ginob\OneDrive\Escritorio\Master\Semestre 2\Big Data Technologies\Dockeraize_version\Model predictions\meteo_totrain.csv"
 
     df = load_df_model(fire_csv, meteo_csv)
 
