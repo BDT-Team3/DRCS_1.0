@@ -10,6 +10,7 @@ from datetime import datetime
 from io import BytesIO
 import streamlit as st
 from PIL import Image
+import pandas as pd
 import folium
 import json
 
@@ -27,279 +28,396 @@ def render_satellite_tab(latest_sat, minio_client, img_bucket="satellite-imgs"):
         severity_assessment = wildfire_analysis.get('severity_assessment', {})
         spatial_distribution = wildfire_analysis.get('spatial_distribution', {})
         microarea_info = latest_sat.get('microarea_info', {})
-        
-        # ==================== HEADER MAIN ====================
-        col1, col2, col3 = st.columns([2, 2, 1])
-        
-        with col1:
-            st.metric(
-                "📅 Event Timestamp", 
-                latest_sat.get('event_timestamp', 'N/A')[:19].replace('T', ' ')
-            )
-        
-        with col2:
-            st.metric(
-                "🗺️ Area ID", 
-                f"{latest_sat.get('microarea_id', 'N/A')}"
-            )
-        
-        with col3:
-            risk_level = severity_assessment.get('risk_level', 'unknown')
-            if risk_level == 'extreme':
-                st.error("🚨 EXTREME")
-            elif risk_level == 'high':
-                st.warning("⚠️ HIGH")
-            elif risk_level == 'moderate':
-                st.info("🟡 MODERATE")
-            else:
-                st.success("✅ NORMAL")
-        
-        # Response timestamp
-        st.caption(f"Response processed: {latest_sat.get('response_timestamp', 'N/A')[:19].replace('T', ' ')}")
-        
-        st.divider()
 
-        # ==================== GEOGRAPHIC INFO ====================
-        st.subheader("🗺️ Geographic Details")
-        if microarea_info:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Min Latitude", f"{microarea_info.get('min_lat', 0):.6f}")
-                st.metric("Max Latitude", f"{microarea_info.get('max_lat', 0):.6f}")
-            with col2:
-                st.metric("Min Longitude", f"{microarea_info.get('min_long', 0):.6f}")
-                st.metric("Max Longitude", f"{microarea_info.get('max_long', 0):.6f}")
+        col = st.columns((1.5, 4.5, 2), gap='medium')
 
-        # ==================== IMAGE REFERENCE ====================
-        if 'image_pointer' in latest_sat:
-            st.divider()
-            object_key = latest_sat.get("image_pointer")
-            bucket_name = img_bucket
+        
+        with col[0]:
+            # ==================== EVENT METADATA ====================  
+            # DataFrame 1: Event Metadata
+            df_event_metadata = pd.DataFrame({
+                'Metric': [
+                    'Event Ts',
+                    'Area ID',
+                    'Risk Level'
+                ],
+                'Value': [
+                    latest_sat.get('event_timestamp', 'N/A')[:19].replace('T', ' '),
+                    f"{latest_sat.get('microarea_id', 'N/A')}",
+                    severity_assessment.get('risk_level', 'unknown').upper()
+                ]
+            })
 
-            try:
-                response = minio_client.get_object(Bucket=bucket_name, Key=object_key)
-                image_bytes = response['Body'].read()
-                image = Image.open(BytesIO(image_bytes))
-                st.image(image, caption=object_key)
-            except Exception as e:
-                st.error(f"Error retrieving image: {e}")
+            # ==================== GEOGRAPHIC INFORMATION ====================            
+            # DataFrame 2: Geographic Information
+            df_geographic_info = pd.DataFrame({
+                'Geographic Metric': [
+                    'Min Latitude',
+                    'Max Latitude', 
+                    'Min Longitude',
+                    'Max Longitude'
+                ],
+                'Coordinate': [
+                    f"{microarea_info.get('min_lat', 0):.6f}",
+                    f"{microarea_info.get('max_lat', 0):.6f}",
+                    f"{microarea_info.get('min_long', 0):.6f}",
+                    f"{microarea_info.get('max_long', 0):.6f}"
+                ]
+            })
+            
+            # ==================== FIRE INDICATORS ====================            
+            # DataFrame 3: Fire Indicators
+            df_fire_indicators = pd.DataFrame({
+                'Fire Indicator': [
+                    'High Temp Signatures',
+                    'Vegetation Stress',
+                    'Moisture Deficit',
+                    'Burn Scars',
+                    'Smoke Signatures'
+                ],
+                'Count': [
+                    fire_indicators.get('high_temperature_signatures', 0),
+                    fire_indicators.get('vegetation_stress_detected', 0),
+                    fire_indicators.get('moisture_deficit_areas', 0),
+                    fire_indicators.get('burn_scar_indicators', 0),
+                    fire_indicators.get('smoke_signatures', 0)
+                ]
+            })
 
-        st.divider()
-        
-        # ==================== DETECTION SUMMARY ====================
-        st.subheader("🎯 Detection Summary")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric("Total Pixels", detection_summary.get('total_pixels', 0))
-        with col2:
-            st.metric("Anomalous Pixels", detection_summary.get('anomalous_pixels', 0))
-        with col3:
-            st.metric("Anomaly %", f"{detection_summary.get('anomaly_percentage', 0)}%")
-        with col4:
-            st.metric("Affected Area", f"{detection_summary.get('affected_area_km2', 0)} km²")
-        with col5:
-            st.metric("Confidence", f"{detection_summary.get('confidence_level', 0)}")
-        
-        st.divider()
-        
-        # ==================== FIRE INDICATORS ====================
-        st.subheader("🔥 Fire Indicators")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric("🌡️ High Temp Signatures", fire_indicators.get('high_temperature_signatures', 0))
-        with col2:
-            st.metric("🌿 Vegetation Stress", fire_indicators.get('vegetation_stress_detected', 0))
-        with col3:
-            st.metric("💧 Moisture Deficit", fire_indicators.get('moisture_deficit_areas', 0))
-        with col4:
-            st.metric("🔥 Burn Scars", fire_indicators.get('burn_scar_indicators', 0))
-        with col5:
-            st.metric("💨 Smoke Signatures", fire_indicators.get('smoke_signatures', 0))
-        
-        st.divider()
-        
-        # ==================== SPECTRAL ANALYSIS ====================
-        st.subheader("📊 Spectral Analysis")
-        
-        # Anomalous Band Averages
-        st.write("**Anomalous Band Averages:**")
-        anom_bands = spectral_analysis.get('anomalous_band_averages', {})
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-        with col1:
-            st.metric("B2 (Blue)", f"{anom_bands.get('B2', 0):.3f}")
-        with col2:
-            st.metric("B3 (Green)", f"{anom_bands.get('B3', 0):.3f}")
-        with col3:
-            st.metric("B4 (Red)", f"{anom_bands.get('B4', 0):.3f}")
-        with col4:
-            st.metric("B8 (NIR)", f"{anom_bands.get('B8', 0):.3f}")
-        with col5:
-            st.metric("B8A (NIR)", f"{anom_bands.get('B8A', 0):.3f}")
-        with col6:
-            st.metric("B11 (SWIR1)", f"{anom_bands.get('B11', 0):.3f}")
-        with col7:
-            st.metric("B12 (SWIR2)", f"{anom_bands.get('B12', 0):.3f}")
-        
-        # Scene Band Averages
-        st.write("**Scene Band Averages:**")
-        scene_bands = spectral_analysis.get('scene_band_averages', {})
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-        with col1:
-            st.metric("B2 (Blue)", f"{scene_bands.get('B2', 0):.3f}")
-        with col2:
-            st.metric("B3 (Green)", f"{scene_bands.get('B3', 0):.3f}")
-        with col3:
-            st.metric("B4 (Red)", f"{scene_bands.get('B4', 0):.3f}")
-        with col4:
-            st.metric("B8 (NIR)", f"{scene_bands.get('B8', 0):.3f}")
-        with col5:
-            st.metric("B8A (NIR)", f"{scene_bands.get('B8A', 0):.3f}")
-        with col6:
-            st.metric("B11 (SWIR1)", f"{scene_bands.get('B11', 0):.3f}")
-        with col7:
-            st.metric("B12 (SWIR2)", f"{scene_bands.get('B12', 0):.3f}")
-        
-        # Anomalous Index Averages
-        st.write("**Anomalous Index Averages:**")
-        anom_indices = spectral_analysis.get('anomalous_index_averages', {})
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("NDVI", f"{anom_indices.get('NDVI', 0):.3f}")
-        with col2:
-            st.metric("NDMI", f"{anom_indices.get('NDMI', 0):.3f}")
-        with col3:
-            st.metric("NDWI", f"{anom_indices.get('NDWI', 0):.3f}")
-        with col4:
-            st.metric("NBR", f"{anom_indices.get('NBR', 0):.3f}")
-        
-        st.divider()
-        
-        # ==================== ENVIRONMENTAL ASSESSMENT ====================
-        st.subheader("🌿 Environmental Assessment")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Vegetation Health:**")
+            # ==================== ENVIROMENTAL ASSESSMENT ====================
+            # DataFrame 4: Environmental Assessment
+            environmental_data = []
+
+            # Vegetation Health
             veg_health = environmental_assessment.get('vegetation_health', {})
-            veg_status = veg_health.get('status', 'unknown')
-            
-            if veg_status == 'stressed':
-                st.error(f"Status: **{veg_status.upper()}**")
-            elif veg_status == 'healthy':
-                st.success(f"Status: **{veg_status.upper()}**")
-            else:
-                st.info(f"Status: **{veg_status.upper()}**")
-            
-            st.metric("Average NDVI", f"{veg_health.get('average_ndvi', 0):.3f}")
-            st.metric("Healthy Vegetation %", f"{veg_health.get('healthy_vegetation_percent', 0)}%")
-        
-        with col2:
-            st.write("**Moisture Conditions:**")
+            environmental_data.extend([
+                ['Vegetation Status', veg_health.get('status', 'unknown').upper()],
+                ['Average NDVI', f"{veg_health.get('average_ndvi', 0):.3f}"],
+                ['Healthy Vegetation %', f"{veg_health.get('healthy_vegetation_percent', 0)}%"]
+            ])
+
+            # Moisture Conditions
             moisture = environmental_assessment.get('moisture_conditions', {})
-            moisture_status = moisture.get('status', 'unknown')
+            environmental_data.extend([
+                ['Moisture Status', moisture.get('status', 'unknown').upper()],
+                ['Average NDMI', f"{moisture.get('average_ndmi', 0):.3f}"],
+                ['Average NDWI', f"{moisture.get('average_ndwi', 0):.3f}"],
+                ['Dry Pixel %', f"{moisture.get('dry_pixel_percent', 0)}%"]
+            ])
+
+            # Fire Weather Indicators
+            fire_weather = environmental_assessment.get('fire_weather_indicators', {})
+            environmental_data.extend([
+                ['Fire Weather Level', fire_weather.get('fire_weather_level', 'unknown').upper()],
+                ['Temperature Signature %', f"{fire_weather.get('temperature_signature_percent', 0)}%"],
+                ['Moisture Deficit %', f"{fire_weather.get('moisture_deficit_percent', 0)}%"],
+                ['Smoke Detection %', f"{fire_weather.get('smoke_detection_percent', 0)}%"]
+            ])
+
+            # Environmental Stress Level
+            env_stress = environmental_assessment.get('environmental_stress_level', 'unknown')
+            environmental_data.append(['Environmental Stress', env_stress.upper()])
+
+            df_environmental_assessment = pd.DataFrame(environmental_data, columns=['Environmental Metric', 'Value'])
+            df_environmental_assessment["Value"] = df_environmental_assessment["Value"].astype(str)
+
+            # ==================== DETECTION SUMMARY ====================
+            # Create DataFrame for Detection Summary
+            df_detection_summary = pd.DataFrame({
+                "Metric": [
+                    "Total Pixels",
+                    "Anomalous Pixels",
+                    "Anomaly %",
+                    "Affected Area",
+                    "Confidence"
+                ],
+                "Value": [
+                    detection_summary.get('total_pixels', 0),
+                    detection_summary.get('anomalous_pixels', 0),
+                    f"{detection_summary.get('anomaly_percentage', 0)}%",
+                    f"{detection_summary.get('affected_area_km2', 0)} km²",
+                    f"{detection_summary.get('confidence_level', 0)}"
+                ]
+            })
+            df_detection_summary["Value"] = df_detection_summary["Value"].astype(str)
+
+            # ==================== DISPLAY TABLES ====================
+            # Display 1: Event Metadata
+            st.markdown("#### Event Metadata")
+            st.dataframe(
+                df_event_metadata,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="small")
+                }
+            )
+            # Display 2: Detection Summary as DataFrame
+            st.markdown("#### Detection Summary")
+            st.dataframe(
+                df_detection_summary,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="small")
+                }
+            )              
+            # Display 3: Geographic Information
+            st.markdown("#### Geographic INFO")
+            st.dataframe(
+                df_geographic_info,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Geographic Metric": st.column_config.TextColumn("Geographic Metric", width="medium"),
+                    "Coordinate": st.column_config.TextColumn("Coordinate", width="small")
+                }
+            )
+            # Display 4: Fire Indicators
+            st.markdown("#### Fire Indicators")
+            st.dataframe(
+                df_fire_indicators,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Fire Indicator": st.column_config.TextColumn("Fire Indicator", width="medium"),
+                    "Count": st.column_config.NumberColumn("Count", format="%d", width="small")
+                }
+            )
+            # Display 5: Environmental Assessment
+            st.markdown("#### Env. Assessment")
+            st.dataframe(
+                df_environmental_assessment,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Environmental Metric": st.column_config.TextColumn("Environmental Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="small")
+                }
+            )          
+
+
+        with col[1]:
+            # ==================== IMAGE REFERENCE ====================
+            st.markdown("#### LAAP ")
+            st.write("Latest Available Assesment Picture")
             
-            if moisture_status == 'very_dry':
-                st.error(f"Status: **{moisture_status.upper()}**")
-            elif moisture_status == 'dry':
-                st.warning(f"Status: **{moisture_status.upper()}**")
-            else:
-                st.info(f"Status: **{moisture_status.upper()}**")
+            if 'image_pointer' in latest_sat:
+                st.divider()
+                object_key = latest_sat.get("image_pointer")
+                bucket_name = img_bucket
+
+                try:
+                    response = minio_client.get_object(Bucket=bucket_name, Key=object_key)
+                    image_bytes = response['Body'].read()
+                    image = Image.open(BytesIO(image_bytes))
+                    st.image(image, caption=object_key)
+                except Exception as e:
+                    st.error(f"Error retrieving image: {e}")
+
+            # ==================== RECOMMENDATIONS ====================
+            recommendations = wildfire_analysis.get('recommendations', [])
+            if recommendations:
+                st.markdown("#### Emergency Recommendations")
+                
+                for i, rec in enumerate(recommendations, 1):
+                    if i <= 3:  
+                        st.error(f"**{i}.** {rec}")
+                    else:  
+                        st.warning(f"**{i}.** {rec}")
+        
+        
+        with col[2]:
+            # ==================== SEVERITY ASSESSMENT ====================
+            st.markdown("#### Severity Assessment")
             
-            st.metric("Average NDMI", f"{moisture.get('average_ndmi', 0):.3f}")
-            st.metric("Average NDWI", f"{moisture.get('average_ndwi', 0):.3f}")
-            st.metric("Dry Pixel %", f"{moisture.get('dry_pixel_percent', 0)}%")
-        
-        # Fire Weather Indicators
-        st.write("**Fire Weather Indicators:**")
-        fire_weather = environmental_assessment.get('fire_weather_indicators', {})
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            fw_level = fire_weather.get('fire_weather_level', 'unknown')
-            if fw_level == 'high':
-                st.error(f"Fire Weather Level: **{fw_level.upper()}**")
-            elif fw_level == 'moderate':
-                st.warning(f"Fire Weather Level: **{fw_level.upper()}**")
-            else:
-                st.info(f"Fire Weather Level: **{fw_level.upper()}**")
-        with col2:
-            st.metric("Temperature Signature %", f"{fire_weather.get('temperature_signature_percent', 0)}%")
-        with col3:
-            st.metric("Moisture Deficit %", f"{fire_weather.get('moisture_deficit_percent', 0)}%")
-        with col4:
-            st.metric("Smoke Detection %", f"{fire_weather.get('smoke_detection_percent', 0)}%")
-        
-        # Environmental Stress Level
-        env_stress = environmental_assessment.get('environmental_stress_level', 'unknown')
-        if env_stress == 'critical':
-            st.error(f"🚨 Environmental Stress Level: **{env_stress.upper()}**")
-        elif env_stress == 'high':
-            st.warning(f"⚠️ Environmental Stress Level: **{env_stress.upper()}**")
-        else:
-            st.info(f"Environmental Stress Level: **{env_stress.upper()}**")
-        
-        st.divider()
-        
-        # ==================== SEVERITY ASSESSMENT ====================
-        st.subheader("⚡ Severity Assessment")
-        
-        col1, col2 = st.columns(2)
-        with col1:
             st.metric("Severity Score", f"{severity_assessment.get('severity_score', 0):.2f}")
-            risk_level = severity_assessment.get('risk_level', 'unknown')
-            if risk_level == 'extreme':
-                st.error(f"Risk Level: **{risk_level.upper()}**")
-            elif risk_level == 'high':
-                st.warning(f"Risk Level: **{risk_level.upper()}**")
-            else:
-                st.info(f"Risk Level: **{risk_level.upper()}**")
             
+            # Extract threat classification info
             threat_class = severity_assessment.get('threat_classification', {})
-            threat_level = threat_class.get('level', 'unknown')
+            threat_level = threat_class.get('level', 'unknown').upper()
+            priority = threat_class.get('priority', 'N/A')
+            evacuation = str(threat_class.get('evacuation_consideration', False))
+
+            # Optional: Display colored alert based on threat level
             if threat_level == 'CRITICAL':
-                st.error(f"Threat Level: **{threat_level}**")
+                st.error(f"🚨 Threat: {threat_level}")
             elif threat_level == 'HIGH':
-                st.warning(f"Threat Level: **{threat_level}**")
+                st.warning(f"⚠️ Threat: {threat_level}")
             else:
-                st.info(f"Threat Level: **{threat_level}**")
-        
-        with col2:
-            st.write(f"Priority: **{threat_class.get('priority', 'N/A')}**")
-            st.write(f"Evacuation needed: **{threat_class.get('evacuation_consideration', False)}**")
-        
-        # Threat Description
-        threat_desc = severity_assessment.get('threat_classification', {}).get('description', '')
-        if threat_desc:
-            st.info(f"📋 **Description:** {threat_desc}")
-        
-        st.divider()
-        
-        # ==================== SPATIAL DISTRIBUTION ====================
-        st.subheader("📍 Spatial Distribution")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Cluster Density", f"{spatial_distribution.get('cluster_density', 0):.4f}")
-        with col2:
-            st.metric("Geographic Spread", f"{spatial_distribution.get('geographic_spread_km2', 0):.2f} km²")
-        with col3:
-            st.metric("Hotspot Concentration %", f"{spatial_distribution.get('hotspot_concentration_percent', 0)}%")
-        
-        st.divider()
-        
-        # ==================== RECOMMENDATIONS ====================
-        recommendations = wildfire_analysis.get('recommendations', [])
-        if recommendations:
-            st.subheader("📋 Emergency Recommendations")
+                st.info(f"📊 Threat: {threat_level}")
+
+            # Create DataFrame for Threat Classification
+            df_threat_classification = pd.DataFrame({
+                "Metric": [
+                    "Threat Level",
+                    "Priority",
+                    "Evacuation Needed"
+                ],
+                "Value": [
+                    threat_level,
+                    priority,
+                    evacuation
+                ]
+            })
+
+            # Display Threat Classification as DataFrame
+            st.markdown("#### 🔐 Threat Classification")
+            st.dataframe(
+                df_threat_classification,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="small")
+                }
+            )
             
-            for i, rec in enumerate(recommendations, 1):
-                if i <= 3:  
-                    st.error(f"🚨 **{i}.** {rec}")
-                else:  
-                    st.warning(f"⚠️ **{i}.** {rec}")
-    
+            # ==================== SPATIAL DISTRIBUTION ====================
+            # Create DataFrame for Spatial Distribution
+            df_spatial_distribution = pd.DataFrame({
+                "Metric": [
+                    "Cluster Density",
+                    "Geographic Spread",
+                    "Hotspot Concentration %"
+                ],
+                "Value": [
+                    f"{spatial_distribution.get('cluster_density', 0):.4f}",
+                    f"{spatial_distribution.get('geographic_spread_km2', 0):.2f} km²",
+                    f"{spatial_distribution.get('hotspot_concentration_percent', 0)}%"
+                ]
+            })
+            df_spatial_distribution["Value"] = df_spatial_distribution["Value"].astype(str)
+
+            # Display Spatial Distribution as DataFrame
+            st.markdown("#### 📍 Spatial Distribution")
+            st.dataframe(
+                df_spatial_distribution,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value": st.column_config.TextColumn("Value", width="small")
+                }
+            )
+            
+            # ==================== SPECTRAL ANALYSIS ====================
+            # Anomalous Band Averages
+            st.write("**Anomalous Band Averages:**")
+            anom_bands = spectral_analysis.get('anomalous_band_averages', {})
+            df_anom_band_avg = pd.DataFrame({
+                'Band': [
+                    "B2 (Blue)",
+                    "B3 (Green)",
+                    "B4 (Red)", 
+                    "B8 (NIR)", 
+                    "B8A (NIR)",
+                    "B11 (SWIR1)",
+                    "B12 (SWIR2)"
+                ],
+                'Value': [
+                    f"{anom_bands.get('B2', 0):.3f}",
+                    f"{anom_bands.get('B3', 0):.3f}",
+                    f"{anom_bands.get('B4', 0):.3f}",
+                    f"{anom_bands.get('B8', 0):.3f}",
+                    f"{anom_bands.get('B8A', 0):.3f}",
+                    f"{anom_bands.get('B11', 0):.3f}",
+                    f"{anom_bands.get('B12', 0):.3f}"
+                ]
+            })
+
+            st.dataframe(
+                df_anom_band_avg,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Band": st.column_config.TextColumn(
+                        "Band Name",
+                        width="medium"
+                    ),
+                    "Value": st.column_config.TextColumn(
+                        "Average Value",
+                        width="small"
+                    )
+                }
+            )        
+            
+            # Scene Band Averages
+            st.write("**Scene Band Averages:**")
+            scene_bands = spectral_analysis.get('scene_band_averages', {})
+            df_scene_band_avg = pd.DataFrame({
+                'Band': [
+                    "B2 (Blue)",
+                    "B3 (Green)",
+                    "B4 (Red)", 
+                    "B8 (NIR)", 
+                    "B8A (NIR)",
+                    "B11 (SWIR1)",
+                    "B12 (SWIR2)"
+                ],
+                'Value': [
+                    f"{scene_bands.get('B2', 0):.3f}",
+                    f"{scene_bands.get('B3', 0):.3f}",
+                    f"{scene_bands.get('B4', 0):.3f}",
+                    f"{scene_bands.get('B8', 0):.3f}",
+                    f"{scene_bands.get('B8A', 0):.3f}",
+                    f"{scene_bands.get('B11', 0):.3f}",
+                    f"{scene_bands.get('B12', 0):.3f}"
+                ]
+            })
+
+            st.dataframe(
+                df_scene_band_avg,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Band": st.column_config.TextColumn(
+                        "Band Name",
+                        width="medium"
+                    ),
+                    "Value": st.column_config.TextColumn(
+                        "Average Value",
+                        width="small"
+                    )
+                }
+            )
+            
+            # Anomalous Index Averages
+            st.write("**Anomalous Index Averages:**")
+            anom_indices = spectral_analysis.get('anomalous_index_averages', {})
+            df_anom_indices = pd.DataFrame({
+                'Index': [
+                    "NDVI",
+                    "NDMI",
+                    "NDWI",
+                    "NBR"
+                ],
+                'Value': [
+                    f"{anom_indices.get('NDVI', 0):.3f}",
+                    f"{anom_indices.get('NDMI', 0):.3f}",
+                    f"{anom_indices.get('NDWI', 0):.3f}",
+                    f"{anom_indices.get('NBR', 0):.3f}"
+                ]
+            })
+
+            st.dataframe(
+                df_anom_indices,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Index": st.column_config.TextColumn(
+                        "Index Name",
+                        width="medium"
+                    ),
+                    "Value": st.column_config.TextColumn(
+                        "Average Value",
+                        width="small"
+                    )
+                }
+            )
+        
     else:
         st.info("🔄 Waiting for satellite data...")
         st.write("The system is ready to receive and display real-time satellite environmental data.")

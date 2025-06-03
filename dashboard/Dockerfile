@@ -7,7 +7,7 @@ WORKDIR /app
 COPY . .
 
 # Install dependencies
-RUN pip install --no-cache-dir streamlit pandas plotly kafka-python psycopg2-binary
+RUN pip install --no-cache-dir streamlit pandas plotly kafka-python psycopg2-binary altair pandas
 
 RUN pip install --no-cache-dir boto3 Pillow folium streamlit-folium streamlit-autorefresh plotly redis
 
