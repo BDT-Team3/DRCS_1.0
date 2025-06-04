@@ -38,10 +38,6 @@ from kafka.admin import KafkaAdminClient
 from kafka.producer import KafkaProducer
 from kafka.errors import KafkaError
 from datetime import datetime
-import pyarrow.parquet as pq
-from io import BytesIO
-import pyarrow as pa
-import pandas as pd
 import logging
 import random
 import redis
@@ -65,7 +61,6 @@ logger = logging.getLogger(__name__)
 KAFKA_TOPIC = "sensor_meas"
 KAFKA_SERVERS = "kafka:9092"
 GOLD_IOT_TOPIC = "gold_iot"
-SILVER_IOT_TOPIC = "silver_iot"
 
 # MinIO configuration - read from environment variables if available
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
@@ -214,210 +209,55 @@ class S3MinIOSinkBronze(S3MinIOSinkBase):
         return value
     
 
-class S3MinIOSinkSilver(MapFunction):
+class S3MinIOSinkSilver(S3MinIOSinkBase):
     """
-    MinIO sink for Parquet format using direct boto3 approach.
-    Processes IoT sensor data and saves to partitioned Parquet files.
+    MinIO sink for processed (silver) data layer.
+    
+    Persists processed sensor data to the silver data layer in MinIO,
+    separating normal readings from anomalies.
     """
-    
-    def __init__(self):
-        self.bucket_name = "silver"
-        # Get from environment variables or set defaults
-        self.minio_endpoint = MINIO_ENDPOINT
-        self.access_key = MINIO_ACCESS_KEY
-        self.secret_key = MINIO_SECRET_KEY
-        self.s3_client = None
-        
-    def open(self, runtime_context):
-        """Initialize MinIO connection"""
-        try:
-            self.s3_client = boto3.client(
-                's3',
-                endpoint_url=f"http://{self.minio_endpoint}",
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name='us-east-1'  # MinIO doesn't care about region
-            )
-            # Test connection
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            raise Exception(f"Failed to connect to MinIO: {e}")
-    
-    def process_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process IoT data with detection flags (anomalies)"""
-        station_metadata = data.get("station_metadata", {})
-        position = station_metadata.get("position", {})
-        sensors = station_metadata.get("sensors", {})
-        measurements = data.get("measurements", {})
-        if "detection_flags" in data.keys():
-            detection_flags = data.get("detection_flags", {})
-        else:
-            detection_flags = data.get("status_flags", {})
-        
-        return {
-            "station_id": data.get("station_id", ""),
-            "response_timestamp": data.get("response_timestamp", 0),
-            "latest_event_timestamp": data.get("latest_event_timestamp", 0),
-            
-            # Measurements
-            "temperature_c": measurements.get("temperature_c", 0.0),
-            "humidity_percent": measurements.get("humidity_percent", 0.0),
-            "co2_ppm": measurements.get("co2_ppm", 0.0),
-            "pm25_ugm3": measurements.get("pm25_ugm3", 0.0),
-            "smoke_index": measurements.get("smoke_index", 0.0),
-            "infrared_intensity": measurements.get("infrared_intensity", 0.0),
-            "battery_voltage": measurements.get("battery_voltage", 0.0),
-            
-            # Detection flags
-            "wildfire_detected": detection_flags.get("wildfire_detected", False),
-            "smoke_detected": detection_flags.get("smoke_detected", False),
-            "flame_detected_ir": detection_flags.get("flame_detected_ir", False),
-            "anomaly_detected": detection_flags.get("anomaly_detected", False),
-            "anomaly_type": detection_flags.get("anomaly_type", ""),
-            
-            # Station Metadata
-            "microarea_id": position.get("microarea_id", ""),
-            "latitude": position.get("latitude", 0.0),
-            "longitude": position.get("longitude", 0.0),
-            "elevation_m": position.get("elevation_m", 0.0),
-            "station_model": station_metadata.get("station_model", ""),
-            "deployment_date": station_metadata.get("deployment_date", ""),
-            "maintenance_status": station_metadata.get("maintenance_status", ""),
-            "battery_type": station_metadata.get("battery_type", ""),
-            
-            # Sensor metadata
-            "temp_sens": sensors.get("temp_sens", ""),
-            "hum_sens": sensors.get("hum_sens", ""),
-            "co2_sens": sensors.get("co2_sens", ""),
-            "pm25_sens": sensors.get("pm25_sens", ""),
-            "smoke_sens": sensors.get("smoke_sens", ""),
-            "ir_sens": sensors.get("ir_sens", "")
-        }
-    
-    def add_partition_columns(self, processed_data: Dict[str, Any], timestamp_millis: int) -> Tuple[Dict[str, Any], str]:
-        """Add partition columns based on timestamp"""
-        # Convert timestamp to datetime object first
-        dt = datetime.fromtimestamp(timestamp_millis / 1000.0)
-        
-        # Add partition columns
-        processed_data["year"] = dt.year
-        processed_data["month"] = dt.month
-        processed_data["day"] = dt.day
-        
-        # Create timestamp string for filename
-        timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Remove last 3 digits of microseconds
-        
-        return processed_data, timestamp_str
-    
-    def save_to_parquet(self, data_list: List[Dict[str, Any]], partition_path: str, station_id: str, timestamp: str) -> bool:
-        """Save processed data to partitioned Parquet file"""
-        try:
-            if not data_list:
-                return True
-                
-            # Convert to DataFrame
-            df = pd.DataFrame(data_list)
-            
-            # Create PyArrow table
-            table = pa.Table.from_pandas(df)
-            
-            # Create in-memory buffer
-            buffer = BytesIO()
-            
-            # Write to Parquet
-            pq.write_table(
-                table, 
-                buffer, 
-                compression='snappy'
-            )
-            buffer.seek(0)
-            
-            # Generate S3 key with partitioning
-            sample_row = data_list[0]
-            year = sample_row['year']
-            month = sample_row['month']
-            day = sample_row['day']
-            
-            s3_key = f"{partition_path}/year={year}/month={month:02d}/day={day:02d}/{station_id}_{timestamp}.parquet"
-            
-            # Upload to MinIO
-            self.s3_client.upload_fileobj(
-                buffer,
-                self.bucket_name,
-                s3_key,
-                ExtraArgs={'ContentType': 'application/octet-stream'}
-            )
-            
-            # print(f"Successfully saved: {s3_key}")
-            return True
-            
-        except Exception as e:
-            print(f"ERROR: Failed to save to Parquet: {e}")
-            return False
-    
+
     def map(self, value: str) -> str:
-        """Main Flink MapFunction method - process a single JSON message"""
-        try:
-            # Parse JSON
-            data = json.loads(value)
-            station_id = data.get("station_id", "unknown")
-            timestamp_millis = data.get("latest_event_timestamp", 0)
-            
-            # Handle missing or invalid timestamp
-            if timestamp_millis <= 0:
-                timestamp_millis = int(datetime.now().timestamp() * 1000)
-            
-            # Determine processing path
-            if "detection_flags" not in data:
-                # Normal data processing
-                processed_data = self.process_data(data)
-                processed_data, timestamp = self.add_partition_columns(processed_data, timestamp_millis)
-                partition_path = "iot_processed/normal"
-                
-            else:
-                # Anomaly data processing
-                processed_data = self.process_data(data)
-                processed_data, timestamp = self.add_partition_columns(processed_data, timestamp_millis)
-                partition_path = "iot_processed/anomalies"
-            
-            # Save to Parquet
-            self.save_to_parquet([processed_data], partition_path, station_id, timestamp)
-            
-        except Exception as e:
-            print(f"ERROR: Failed to process message: {e}")
+        """
+        Save processed sensor data to the silver layer in MinIO.
         
+        Args:
+            value: JSON string containing processed sensor data
+            
+        Returns:
+            str: Original value (passed through for downstream processing)
+        """
+        try:
+            data = json.loads(value)
+            station_id = data["station_id"]
+            timestamp_epoch_millis = data["latest_event_timestamp"]
+            # Convert epoch milliseconds to datetime
+            timestamp = datetime.fromtimestamp(timestamp_epoch_millis / 1000.0).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] 
+            
+            # Route to appropriate partition based on whether anomaly was detected
+            if "detection_flags" in data:
+                # Save record to anomalies partition
+                self.save_record_to_minio(value, station_id, timestamp, 
+                                        bucket_name='silver', partition='iot_processed/anomalies')
+            else:
+                # Save record to normal partition
+                self.save_record_to_minio(value, station_id, timestamp, 
+                                        bucket_name='silver', partition='iot_processed/normal')
+
+        except Exception as e:
+            logger.error(f"Error while saving to silver layer: {str(e)}")
+
+        # Pass through for downstream processing
         return value
+    
 
-
-class S3MinIOSinkGold(MapFunction):
+class S3MinIOSinkGold(S3MinIOSinkBase):
     """
     MinIO sink for aggregated (gold) data layer.
     
     Persists analytics-ready data to the gold data layer in MinIO,
     separating normal readings from wildfire events.
     """
-    def __init__(self):
-        self.bucket_name = "silver"
-        # Get from environment variables or set defaults
-        self.minio_endpoint = MINIO_ENDPOINT
-        self.access_key = MINIO_ACCESS_KEY
-        self.secret_key = MINIO_SECRET_KEY
-        self.s3_client = None
-        
-    def open(self, runtime_context):
-        """Initialize MinIO connection"""
-        try:
-            self.s3_client = boto3.client(
-                's3',
-                endpoint_url=f"http://{self.minio_endpoint}",
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name='us-east-1'  # MinIO doesn't care about region
-            )
-            # Test connection
-            self.s3_client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            raise Exception(f"Failed to connect to MinIO: {e}")    
     
     def map(self, value: str) -> str:
         """
@@ -478,86 +318,114 @@ class ThresholdFilterWindowFunction(ProcessWindowFunction):
     def process(self, key: str, context: Any, elements: List[str]) -> List[str]:
         """
         Process sensor data within a time window, filtering by thresholds.
-
+        
         Args:
             key: Grouping key (station_id)
             context: Window context
             elements: List of JSON strings containing sensor data
-
+            
         Returns:
-            List[str]: List containing a unified message payload per station
+            List[str]: List containing either an anomaly detection or normal status message
+        
+        Notes: This class doesn't maintain state between window processing calls.
         """
-        raw_json_objects = []
         filtered_results = []
-        measurements_accumulator = {}
-        counts = {}
+        raw_json_objects = []
         event_timestamp = None
 
-        for element in elements:
-            try:
-                data = json.loads(element)
-                raw_json_objects.append(data)
+        try:
+            # Step 1: filter by threshold
+            for element in elements:
+                try:
+                    data = json.loads(element)
+                    raw_json_objects.append(data)  # Save parsed data for reuse
 
-                # Track the latest timestamp
-                dt_curr_timestamp = datetime.strptime(data.get("timestamp"), "%Y-%m-%dT%H:%M:%S.%f")
-                curr_timestamp = int(dt_curr_timestamp.timestamp() * 1000)
-                if event_timestamp is None or curr_timestamp > event_timestamp:
-                    event_timestamp = curr_timestamp
+                    # Extract timestamp using the appropriate field
+                    dt_curr_timestamp = datetime.strptime(data.get("timestamp"), "%Y-%m-%dT%H:%M:%S.%f")
+                    curr_timestamp = int(dt_curr_timestamp.timestamp() * 1000)
+                    if event_timestamp is None or curr_timestamp > event_timestamp:
+                        event_timestamp = curr_timestamp
 
-                # Collect measurements for mean computation
-                for field, value in data.get("measurements", {}).items():
-                    if field in self.thresholds:
-                        measurements_accumulator[field] = measurements_accumulator.get(field, 0.0) + value
-                        counts[field] = counts.get(field, 0) + 1
+                    exceeded_thresholds = {}
+                    for field, threshold_value in self.thresholds.items():
+                        if field not in data.get("measurements", {}):
+                            continue
+                        if data["measurements"][field] > threshold_value:
+                            exceeded_thresholds[field] = data["measurements"][field]
 
-                # Check threshold exceedance
-                exceeded_thresholds = {}
-                for field, threshold_value in self.thresholds.items():
-                    if field in data.get("measurements", {}) and data["measurements"][field] > threshold_value:
-                        exceeded_thresholds[field] = data["measurements"][field]
+                    if exceeded_thresholds:
+                        data["exceeded_thresholds"] = exceeded_thresholds
+                        filtered_results.append(data)  # Save as dict for mean computation later
 
-                if exceeded_thresholds:
-                    data["exceeded_thresholds"] = exceeded_thresholds
-                    filtered_results.append(data)
+                except Exception as e:
+                    logger.error(f"Error processing element in threshold filter: {str(e)}")
 
-            except Exception as e:
-                # Log and continue
-                logger.error(f"Error processing element in threshold filter: {str(e)}")
+            # Step 2: compute mean only if something was filtered
+            if filtered_results:
+                measurements_accumulator = {}
+                counts = {}
 
-        # Compute mean measurements regardless of threshold status
-        mean_measurements_data = {
-            field: round(measurements_accumulator[field] / counts[field], 2)
-            for field in measurements_accumulator
-        }
+                for record in filtered_results:
+                    for field, value in record.get("measurements", {}).items():
+                        if field in self.thresholds:
+                            measurements_accumulator[field] = measurements_accumulator.get(field, 0.0) + value
+                            counts[field] = counts.get(field, 0) + 1
 
-        response_timestamp = context.window().end
-        station_id = key if not raw_json_objects else raw_json_objects[0].get("station_id", key)
+                mean_measurements_data = {
+                    field: round(measurements_accumulator[field] / counts[field], 2)
+                    for field in measurements_accumulator
+                }
 
-        result_payload = {
-            'station_id': station_id,
-            'response_timestamp': response_timestamp,
-            'latest_event_timestamp': event_timestamp,
-            'measurements': mean_measurements_data,
-            'status_flags': {
-                "wildfire_detected": False,
-                "smoke_detected": False,
-                "flame_detected_ir": False,
-                "anomaly_detected": False,
-                "anomaly_type": ""
+                response_timestamp = context.window().end  # Use window end time
+                mean_measurements = {
+                    'station_id': filtered_results[0]['station_id'],
+                    'response_timestamp': response_timestamp,
+                    "latest_event_timestamp": event_timestamp,
+                    'measurements': mean_measurements_data
+                }
+
+                # Aggregate detection flags
+                detection_flags = {
+                    "wildfire_detected": True,
+                    "smoke_detected": True,
+                    "flame_detected_ir": True,
+                    "anomaly_detected": True,
+                    "anomaly_type": "wildfire"
+                }
+
+                mean_measurements['detection_flags'] = detection_flags
+
+                # Return a list of field values that match Flink's expected Row structure
+                result_json = json.dumps(mean_measurements)
+                return [result_json]
+            
+            # Nothing exceeded: return status in same format
+            station_id = key
+            if raw_json_objects:
+                station_id = raw_json_objects[0]["station_id"]
+                
+            status_message = {
+                "status": "OK",
+                "message": "No anomalies detected",
+                "station_id": station_id,
+                "response_timestamp": context.window().end,  # Use window end time
+                "latest_event_timestamp": event_timestamp
             }
-        }
-
-        # If any exceeded thresholds, mark as anomaly
-        if filtered_results:
-            result_payload['detection_flags'] = {
-                "wildfire_detected": True,
-                "smoke_detected": True,
-                "flame_detected_ir": True,
-                "anomaly_detected": True,
-                "anomaly_type": "wildfire"
+            # Return a list of field values that match Flink's expected Row structure
+            status_json = json.dumps(status_message)
+            return [status_json]
+            
+        except Exception as e:
+            logger.error(f"Error in threshold filter window function: {str(e)}")
+            # Return a basic error status - ensures the pipeline continues
+            error_message = {
+                "status": "ERROR",
+                "message": f"Error processing window: {str(e)}",
+                "station_id": key,
+                "response_timestamp": context.window().end,
+                "latest_event_timestamp": event_timestamp
             }
-
-        return [json.dumps(result_payload)]
+            return [json.dumps(error_message)]
 
 
 class EnrichFromRedis(MapFunction):
@@ -1451,7 +1319,8 @@ class SinkToKafkaTopic(MapFunction):
                 ).add_callback(self.on_send_success).add_errback(self.on_send_error)                      
                 
             except Exception as e:
-                logging.error(f"Problem during queueing of record. Error: {e}")
+                record_id = record.get("unique_id", "UNKNOWN")
+                logging.error(f"Problem during queueing of record: {record_id}. Error: {e}")
                             
             # Ensure the message is actually sent before continuing
             try: 
@@ -1464,8 +1333,8 @@ class SinkToKafkaTopic(MapFunction):
         except Exception as e:
             logger.error(f"Unhandled error during streaming procedure: {e}")
         
-        # Sink operation
-        return value
+        # Sink operation, nothing to return
+        return
             
     def create_producer(self, bootstrap_servers: list[str]) -> KafkaProducer:
         """
@@ -1667,3 +1536,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
